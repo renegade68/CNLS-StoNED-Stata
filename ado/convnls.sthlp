@@ -1,5 +1,5 @@
 {smcl}
-{* Help revision: 2026-10-22.1; computational version unchanged.}{...}
+{* Help revision: 2026-10-22.2; computational version unchanged.}{...}
 {* *! version 0.5.2  07jul2026 (help examples and references verified)}{...}
 {viewerjumpto "Syntax" "convnls##syntax"}{...}
 {viewerjumpto "Description" "convnls##description"}{...}
@@ -524,8 +524,10 @@ Bug reports and suggestions are welcome.
 
 {title:Software and article}
 
-{pstd}Choonjoo Lee. {it:convnls and stoned: Stochastic Non-smooth Envelopment of Data in Stata}.
-Journal information: {browse "https://www.stata-journal.com/":Stata Journal}.{p_end}
+{pstd}Lee, C. Forthcoming. {it:convnls and stoned: Stochastic Non-smooth Envelopment of Data in Stata}.
+Accepted for publication in the {browse "https://www.stata-journal.com/":Stata Journal}.{p_end}
 {pstd}Author-maintained software under the Academic Free License 3.0 (AFL-3.0).
 See LICENSE and LICENSE_CODE.txt in the repository. Command versions and
-subsequent help revisions are maintained separately.{p_end}
+subsequent help revisions are maintained separately. The acceptance notice
+refers to the article; it does not extend the article's validation claims
+to later software changes.{p_end}

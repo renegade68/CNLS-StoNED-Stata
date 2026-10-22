@@ -1,8 +1,9 @@
 # CNLS and StoNED for Stata
 
-Stata software accompanying Choonjoo Lee's manuscript,
-*convnls and stoned: Stochastic Non-smooth Envelopment of Data in Stata*.
-Journal information: [Stata Journal](https://www.stata-journal.com/).
+Stata software for the article:
+
+> Lee, C. Forthcoming. *convnls and stoned: Stochastic Non-smooth Envelopment of Data in Stata*.
+> Accepted for publication in the [Stata Journal](https://www.stata-journal.com/).
 
 `convnls` fits a shape-constrained Convex Nonparametric Least Squares (CNLS)
 regression. `stoned` decomposes its residuals into noise and inefficiency and
@@ -11,8 +12,10 @@ are supported; returns to scale are specified in the first-stage CNLS fit.
 
 The initial computational baseline is the final submission package dated
 July 7, 2026: `convnls` 0.5.2 and `stoned` 0.3.2. Contact details and help examples
-are maintained separately. Final journal citation and DOI will be added when
-confirmed; later author-maintained software revisions are identified by Git commit.
+are maintained separately. Final journal citation and DOI will be added when available. Later
+author-maintained software revisions are identified by Git commit. The acceptance
+notice refers to the article; it does not extend the article's validation claims
+to later software changes.
 
 ## Install and begin
 
@@ -78,7 +81,7 @@ and actual results. Use synthetic data when research data are confidential.
 
 The software is licensed under the [Academic Free License 3.0](LICENSE), following
 the author's DEA software licensing policy. See [the software notice](LICENSE_CODE.txt).
-Preserve author and method references. Cite the manuscript for this implementation
+Preserve author and method references. Cite the article above for this implementation
 and the method papers listed in the help files for the underlying estimators.
 
 This repository contains the two commands and their help. Manuscripts, signed

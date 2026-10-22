@@ -12,13 +12,15 @@ No additional non-commercial restriction is imposed.
 Attribution
 -----------
 
-Choonjoo Lee. convnls and stoned: Stochastic Non-smooth Envelopment of Data
+Lee, C. Forthcoming. convnls and stoned: Stochastic Non-smooth Envelopment of Data
 in Stata.
-Journal information: https://www.stata-journal.com/
+Accepted for publication in the Stata Journal.
+Stata Journal: https://www.stata-journal.com/
 
-This repository maintains the software associated with that manuscript and
+This repository maintains the software associated with that article and
 subsequent author updates. Final journal citation and DOI will be added when
-confirmed. Later software revisions are maintained separately from the
+available. The acceptance notice refers to the article; it does not extend
+the article's validation claims to later code changes. Later software revisions are maintained separately from the
 submitted manuscript. Preserve author and journal attribution when
 redistributing these files. Method-specific references appear in the code
 and help files.
