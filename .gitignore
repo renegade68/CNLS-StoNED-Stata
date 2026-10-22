@@ -1,0 +1,11 @@
+/*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/LICENSE_CODE.txt
+!/ado/
+/ado/*
+!/ado/convnls.ado
+!/ado/stoned.ado
+!/ado/convnls.sthlp
+!/ado/stoned.sthlp
