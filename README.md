@@ -1,92 +1,70 @@
 # CNLS and StoNED for Stata
 
-Stata software for the article:
+Software accompanying Choonjoo Lee, *convnls and stoned: Stochastic Non-smooth
+Envelopment of Data in Stata* (accepted, Stata Journal), with subsequent author
+updates. See [changes](CHANGELOG.md) before updating an older installation.
 
-> Lee, C. Forthcoming. *convnls and stoned: Stochastic Non-smooth Envelopment of Data in Stata*.
-> Accepted for publication in the [Stata Journal](https://www.stata-journal.com/).
+| Commands | Scope |
+| --- | --- |
+| [`convnls`](ado/convnls.sthlp), [`stoned`](ado/stoned.sthlp) | Scalar CNLS and noise/inefficiency decomposition; production and cost |
+| [`cnlsddf`](ado/cnlsddf.sthlp), [`stonedddf`](ado/stonedddf.sthlp) | Experimental multiple-output directional models; production VRS |
+| [`cnlsddf_sparse`](ado/cnlsddf_sparse.sthlp), [`cnlsddf_domain`](ado/cnlsddf_domain.sthlp) | Optional Python engine; CRS first-stage and geometry diagnostics |
 
-`convnls` fits a shape-constrained Convex Nonparametric Least Squares (CNLS)
-regression. `stoned` decomposes its residuals into noise and inefficiency and
-computes conditional efficiency scores. Both production and cost orientations
-are supported; returns to scale are specified in the first-stage CNLS fit.
+## Install and use
 
-The initial computational baseline is the final submission package dated
-July 7, 2026: `convnls` 0.5.2 and `stoned` 0.3.2. Contact details and help examples
-are maintained separately. Final journal citation and DOI will be added when available. Later
-author-maintained software revisions are identified by Git commit. The acceptance
-notice refers to the article; it does not extend the article's validation claims
-to later software changes.
-
-## Install and begin
-
-Requires **Stata 16 or newer**. No external Python, R or solver installation
-is required. Download or clone this repository and keep the four files in
-`ado/` together. In Stata:
+Requires **Stata 16+**. Download or clone this repository, keep **all files in
+`ado/` together**, and start a fresh Stata session after updating:
 
 ```stata
 adopath ++ "/your/path/CNLS-StoNED-Stata/ado"
 which convnls
 which stoned
-help convnls
 help stoned
 ```
 
-Replace the path with your local folder. `which` shows the copy Stata will use
-if an older installation is also present. This version uses a local-folder
-installation and does not provide `net install` metadata. Access to a private
-repository requires permission.
+For a production model with outcome `y` and inputs `x1 x2` already loaded:
 
-## Commands and examples
+```stata
+convnls y, inputs(x1 x2) frontier(production) generate(ehat)
+assert e(converged)==1
+stoned ehat, outcome(y) generate(score)
+display e(parameter_valid) " " e(score_valid) " " e(estimate_valid)
+```
 
-| Stage | Command | Purpose | Files |
-| --- | --- | --- | --- |
-| 1 | `convnls` | CNLS with monotonicity and convexity/concavity; VRS/CRS; optional contextual variables | [code](ado/convnls.ado) · [help](ado/convnls.sthlp) |
-| 2 | `stoned` | Method-of-moments or pseudo-likelihood decomposition; efficiency and conditional inefficiency | [code](ado/stoned.ado) · [help](ado/stoned.sthlp) |
+[`examples/quickstart.do`](examples/quickstart.do) provides a self-contained
+synthetic example. Choose unused output names; scalar commands can replace
+existing output variables.
 
-Each help file includes a complete block of synthetic-data examples. Copy it
-into the Do-file Editor, omit leading dots, and run from `preserve` through
-`restore`. The original dataset is restored on successful completion; estimation
-results and settings may change. No separate dataset or do-file is required.
+`stoned` now defaults to **pyStoNED 0.7.3 compatibility MOM**, with
+`outcome(y)` in the same units as the residual. For the earlier Stata estimator
+family and BC scores, specify `implementation(legacy)` explicitly;
+`method(psl)` is available in that mode. The two modes return different quantities.
 
-The examples cover cost/production frontiers, VRS/CRS, MOM/PSL, initialization
-strategies, and contextual-variable inference. They demonstrate syntax and do
-not replace the article's empirical replication or a study-specific validation.
+Native MOM and legacy methods need no Python. Public-reference QLE (including
+its `diagnose` row) and the sparse engine require separate optional environments;
+see [dependencies](DEPENDENCIES.txt).
 
-## Interpreting results
+## Interpretation
 
-Inspect `e(converged)` and `e(max_viol)` immediately after `convnls`, before
-`stoned` replaces the estimation results. CNLS convergence codes are 0 (not
-converged), 1 (converged), and 2 (practically converged); see the help for their
-precise interpretation. Check `e(psl_converged)` when using `method(psl)`.
-A successful command return alone does not establish numerical adequacy.
+Inspect first-stage convergence and second-stage validity/boundary diagnostics.
+Reference scores are not necessarily between zero and one. Compatibility and
+numerical validity flags do not establish statistical accuracy. Context effects
+are point estimates; validated standard errors, tests and confidence intervals
+are not provided.
 
-Use the same frontier orientation in both stages. `stoned` reports efficiency
-scores between zero and one; its `inefficiency()` output is a different quantity.
-The commands create or replace their requested output variables, so choose
-output names that do not contain data you need to keep. See each help file for
-assumptions, diagnostics and stored results.
+DDF remains a research extension. Its default reference path uses raw distance
+and coefficient-dependent ratios with unresolved interpretation/identification
+limitations. Use explicit `implementation(legacy)` for directional quantities
+and targets; see [DDF help](ado/stonedddf.sthlp). CRS StoNED decomposition is
+not supported.
 
-## Versions and feedback
+## Attribution and feedback
 
-Computational versions are recorded in `.ado` headers. Help revisions have a
-separate dated marker; help-only changes do not change the computational version.
-Use a Git commit to identify the exact file combination.
+[AFL-3.0](LICENSE); see [software notice](LICENSE_CODE.txt). Cite the article and
+method references in the help files. Journal acceptance does not validate later
+extensions. Final citation/DOI will be added when available.
 
-For a problem report, use [GitHub Issues](https://github.com/renegade68/CNLS-StoNED-Stata/issues).
-Include the Git commit, command, Stata version, `which` output, relevant
-convergence diagnostics, and a small reproducible example showing expected
-and actual results. Use synthetic data when research data are confidential.
-
-## Attribution and license
-
-The software is licensed under the [Academic Free License 3.0](LICENSE), following
-the author's DEA software licensing policy. See [the software notice](LICENSE_CODE.txt).
-Preserve author and method references. Cite the article above for this implementation
-and the method papers listed in the help files for the underlying estimators.
-
-This repository contains the two commands and their help. Manuscripts, signed
-agreements, bank data, simulation scripts, Python comparison tools, logs and ZIP
-archives remain outside this code repository. The software license does not
-cover article manuscripts or publisher PDFs.
+For [issues](https://github.com/renegade68/CNLS-StoNED-Stata/issues), include the
+Git commit, Stata version, command, diagnostics and a small reproducible example.
 
 Contact: Choonjoo Lee — bloom.rampike@gmail.com

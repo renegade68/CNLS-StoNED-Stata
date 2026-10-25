@@ -1,11 +1,11 @@
-*! version 0.5.2  07jul2026
+*! version 0.5.3-dev11  29sep2026
 *! convnls - Convex Nonparametric Least Squares (StoNED Stage 1)
 *!
 *! Kuosmanen (2008, 2012) CNLS with Cutting Plane + ADMM.
 *!
 *! SYNTAX: convnls depvar [if] [in], INputs(varlist) [options]
 *!
-*! Author: Choonjoo Lee (bloom.rampike@gmail.com)
+*! Author: Choonjoo Lee (sarang90@korea.kr)
 
 program define convnls, eclass sortpreserve
     version 16.0
@@ -18,6 +18,7 @@ program define convnls, eclass sortpreserve
         [RTS(string)] ///
         [noMONotone] ///
         [RHO(real -1)] ///
+        [RHOPOLicy(string)] ///
         [TOLerance(real 1e-4)] ///
         [MAXiter(integer 20000)] ///
         [MAXCut(integer 100)] ///
@@ -41,6 +42,38 @@ program define convnls, eclass sortpreserve
     if r(N) == 0 error 2000
     local n_obs = r(N)
 
+    if `n_obs' < 2 {
+        di as error "at least two observations are required"
+        exit 2001
+    }
+    if missing(`tolerance') | `tolerance' <= 0 {
+        di as error "tolerance() must be finite and positive"
+        exit 198
+    }
+    if missing(`rho') | (`rho' != -1 & `rho' <= 0) {
+        di as error "rho() must be -1 (automatic) or finite and positive"
+        exit 198
+    }
+    if missing(`maxiter') | missing(`maxcut') | `maxiter' < 1 | `maxcut' < 1 {
+        di as error "maxiter() and maxcut() must be positive integers"
+        exit 198
+    }
+    if missing(`prune') | `prune' < 0 {
+        di as error "prune() must be finite and nonnegative"
+        exit 198
+    }
+    if !inrange(`sweetpct', 0, 100) {
+        di as error "sweetpct() must be between 0 and 100"
+        exit 198
+    }
+
+    if "`rhopolicy'" == "" local rhopolicy "normalized"
+    local rhopolicy = lower("`rhopolicy'")
+    if !inlist("`rhopolicy'", "normalized", "raw") {
+        di as error "rhopolicy() must be normalized or raw"
+        exit 198
+    }
+
     local m : word count `inputs'
     local q : word count `context'
 
@@ -63,10 +96,10 @@ program define convnls, eclass sortpreserve
         exit 198
     }
 
-    if "`vce'" == "" local vce "ols"
+    if "`vce'" == "" local vce "none"
     local vce = lower("`vce'")
-    if !inlist("`vce'", "ols", "robust") {
-        di as error "vce() must be {bf:ols} or {bf:robust}"
+    if !inlist("`vce'", "none", "ols", "robust") {
+        di as error "vce() must be {bf:none}, {bf:ols}, or {bf:robust}"
         exit 198
     }
 
@@ -79,19 +112,19 @@ program define convnls, eclass sortpreserve
         di as error "init() must be {bf:none}, {bf:ele}, {bf:sweet}, or {bf:adam}"
         exit 198
     }
-    if `adamiter' < 0 {
+    if missing(`adamiter') | `adamiter' < 0 {
         di as error "adamiter() must be nonnegative"
         exit 198
     }
-    if `adamlr' <= 0 {
+    if missing(`adamlr') | `adamlr' <= 0 {
         di as error "adamlr() must be positive"
         exit 198
     }
-    if `adamlambda' <= 0 {
+    if missing(`adamlambda') | `adamlambda' <= 0 {
         di as error "adamlambda() must be positive"
         exit 198
     }
-    if `adamscreen' < 0 {
+    if missing(`adamscreen') | `adamscreen' < 0 {
         di as error "adamscreen() must be nonnegative"
         exit 198
     }
@@ -109,7 +142,7 @@ program define convnls, eclass sortpreserve
         di as text "Note: vcstrat(one) — maxcut auto-set to " `maxcut'
     }
 
-    if `addper' < 0 {
+    if missing(`addper') | `addper' < 0 {
         di as error "addper() must be nonnegative"
         exit 198
     }
@@ -117,11 +150,27 @@ program define convnls, eclass sortpreserve
     if "`generate'" == "" local generate "_convnls_resid"
     if "`fitted'" == ""   local fitted "_convnls_fitted"
 
-    foreach v in `generate' `fitted' _convnls_alpha {
-        capture drop `v'
-    }
+    // Validate the entire write set before touching existing variables.
+    local outputs `generate' `fitted' _convnls_alpha
     forvalues j = 1/`m' {
-        capture drop _convnls_beta`j'
+        local outputs `outputs' _convnls_beta`j'
+    }
+    local unique_outputs : list uniq outputs
+    local n_outputs : word count `outputs'
+    local n_unique : word count `unique_outputs'
+    if `n_outputs' != `n_unique' {
+        di as error "output names must be distinct from each other and the coefficient names"
+        exit 198
+    }
+    local protected `depvar' `inputs' `context' `touse'
+    local collisions : list outputs & protected
+    if "`collisions'" != "" {
+        di as error "output names conflict with input variables: `collisions'"
+        exit 198
+    }
+    foreach v of local outputs {
+        capture confirm variable `v', exact
+        if _rc confirm new variable `v', exact
     }
 
     foreach v of varlist `depvar' `inputs' `context' {
@@ -132,6 +181,24 @@ program define convnls, eclass sortpreserve
         }
     }
 
+    // A design check is necessary, but does not certify statistical identification
+    // or sampling inference for the jointly estimated nonparametric frontier.
+    if `q' > 0 {
+        local response_context : list depvar & context
+        if "`response_context'" != "" {
+            di as error "the dependent variable cannot be included in context()"
+            exit 198
+        }
+        mata: _convnls_context_check("`inputs'", "`context'", "`touse'")
+    }
+
+    // Stata restores this dataset automatically on error or Break. Commit only
+    // at normal program completion. Exact matching avoids abbreviation drops.
+    preserve
+    foreach v of local outputs {
+        capture confirm variable `v', exact
+        if !_rc drop `v'
+    }
     quietly gen double `generate' = .
     quietly gen double `fitted' = .
     quietly gen double _convnls_alpha = .
@@ -148,7 +215,7 @@ program define convnls, eclass sortpreserve
     di as text "Input variables:   " as result "`inputs' (`m')"
     if `q' > 0 {
         di as text "Context variables: " as result "`context' (`q')"
-        di as text "Context VCE:       " as result upper("`vce'")
+        di as text "Covariance diagnostic: " as result upper("`vce'")
     }
     di as text "Frontier type:     " as result ///
         cond(`is_concave', "Production (concave)", "Cost (convex)")
@@ -174,10 +241,21 @@ program define convnls, eclass sortpreserve
         `maxiter', `maxcut', `addper', `prune', ///
         "`init'", `sweetpct', "`vcstrat'", "`vce'", ///
         `adamiter', `adamlr', `adamlambda', `adamscreen', ///
-        "`verbose'")
+        "`verbose'", "`rhopolicy'")
 
     // Save Mata r() results before any r-class command overwrites them.
-    tempname mata_cp_history
+    tempname mata_cp_history mata_admm_info
+    matrix `mata_admm_info' = r(admm_info)
+    local mata_max_mono = r(max_mono)
+    local mata_inner_iters = r(total_inner_iters)
+    local mata_inner_solves = r(inner_solves)
+    local mata_warm_starts = r(warm_starts)
+    local mata_final_rho = r(final_rho)
+    local mata_constraint_bytes = r(constraint_bytes)
+    local mata_dense_bytes = r(dense_constraint_bytes)
+    tempname mata_factor_stats
+    matrix `mata_factor_stats' = r(factor_stats)
+    local mata_stop_reason "`r(stop_reason)'"
     local mata_converged = 0
     local mata_cp_iters  = .
     local mata_n_active  = .
@@ -229,16 +307,25 @@ program define convnls, eclass sortpreserve
     di as text "Fitted range:      [" as result %8.2f r(min) ///
         as text ", " as result %8.2f r(max) as text "]"
 
-    if `is_concave' {
+    // Undefined and exactly zero skewness carry no directional sign evidence.
+    if missing(`skew') {
+        di as text ""
+        di as text "Residual skewness is undefined; no sign comparison is available."
+    }
+    else if `skew' == 0 {
+        di as text ""
+        di as text "Residual skewness = 0; no directional skewness is indicated."
+    }
+    else if `is_concave' {
         if `skew' > 0 {
             di as text ""
             di as text "{bf:Note:} Residual skewness > 0 (" ///
-                as result %5.3f `skew' as text ")."
+                as result %9.3g `skew' as text ")."
             di as text "  Production frontier expects negative skewness."
         }
         else {
             di as text ""
-            di as text "Residual skewness < 0 (" as result %5.3f `skew' ///
+            di as text "Residual skewness < 0 (" as result %9.3g `skew' ///
                 as text ") -- consistent with v - u."
         }
     }
@@ -250,7 +337,7 @@ program define convnls, eclass sortpreserve
         }
         else {
             di as text ""
-            di as text "Residual skewness > 0 (" as result %5.3f `skew' ///
+            di as text "Residual skewness > 0 (" as result %9.3g `skew' ///
                 as text ") -- consistent with v + u."
         }
     }
@@ -264,9 +351,31 @@ program define convnls, eclass sortpreserve
         label variable _convnls_beta`j' "CNLS slope for `vname'"
     }
 
+    // Persist stage-one status on the residual itself, independently of e().
+    // Double copy normalizes storage type; _datasignature is order independent.
+    tempvar signature_resid
+    quietly gen double `signature_resid' = `generate'
+    quietly _datasignature `signature_resid', nonames
+    local residual_signature "`r(datasignature)'"
+    drop `signature_resid'
+    char `generate'[cnls_schema] "1"
+    char `generate'[cnls_version] "0.5.3-dev11"
+    char `generate'[cnls_converged] "`mata_converged'"
+    char `generate'[cnls_inner_status] "`= `mata_admm_info'[1,1]'"
+    char `generate'[cnls_frontier] "`frontier'"
+    char `generate'[cnls_rts] "`rts'"
+    char `generate'[cnls_n] "`n_obs'"
+    char `generate'[cnls_stop_reason] "`mata_stop_reason'"
+    char `generate'[cnls_signature] "`residual_signature'"
+
     ereturn clear
     if `q' > 0 {
-        ereturn post `context_b' `context_V', esample(`touse')
+        // Point estimates only: do not expose an unvalidated covariance as e(V).
+        ereturn post `context_b', esample(`touse') properties(b)
+    }
+    else {
+        // No parametric coefficient vector: post only the actual estimation sample.
+        ereturn post, esample(`touse') properties("")
     }
     ereturn scalar N = `n_obs'
     ereturn scalar m = `m'
@@ -277,6 +386,32 @@ program define convnls, eclass sortpreserve
     ereturn scalar cp_iters  = `mata_cp_iters'
     ereturn scalar n_active  = `mata_n_active'
     ereturn scalar max_viol  = `mata_max_viol'
+    ereturn scalar max_mono = `mata_max_mono'
+    ereturn scalar inner_status = `mata_admm_info'[1,1]
+    ereturn scalar inner_iter = `mata_admm_info'[1,2]
+    ereturn scalar inner_primal = `mata_admm_info'[1,3]
+    ereturn scalar inner_dual = `mata_admm_info'[1,4]
+    ereturn scalar inner_eps_primal = `mata_admm_info'[1,5]
+    ereturn scalar inner_eps_dual = `mata_admm_info'[1,6]
+    ereturn scalar inner_stationarity = `mata_admm_info'[1,7]
+    ereturn scalar inner_eps_stationarity = `mata_admm_info'[1,8]
+    ereturn scalar inner_complementarity = `mata_admm_info'[1,9]
+    ereturn scalar inner_eps_complementarity = `mata_admm_info'[1,10]
+    ereturn scalar inner_tolerance = `mata_admm_info'[1,11]
+    ereturn scalar total_inner_iters = `mata_inner_iters'
+    ereturn scalar inner_solves = `mata_inner_solves'
+    ereturn scalar warm_starts = `mata_warm_starts'
+    ereturn local rho_policy "`rhopolicy'"
+    ereturn scalar rho_adapt_limit = cond("`rhopolicy'" == "raw", 0, 5000)
+    ereturn scalar final_rho = `mata_final_rho'
+    ereturn scalar constraint_bytes = `mata_constraint_bytes'
+    ereturn scalar dense_constraint_bytes = `mata_dense_bytes'
+    ereturn local engine "structured"
+    ereturn scalar factorizations = `mata_factor_stats'[1,1]
+    ereturn scalar chol_solves = `mata_factor_stats'[1,2]
+    ereturn scalar lu_fallbacks = `mata_factor_stats'[1,3]
+    ereturn scalar rho_updates = `mata_factor_stats'[1,4]
+    ereturn local stop_reason "`mata_stop_reason'"
     ereturn scalar addper    = `addper'
     ereturn scalar adamiter  = `adamiter'
     ereturn scalar adamlr    = `adamlr'
@@ -293,14 +428,32 @@ program define convnls, eclass sortpreserve
     ereturn local fitted_var   "`fitted'"
     ereturn local init_method  "`init'"
     ereturn local vcstrat      "`vcstrat'"
-    ereturn local vce          "`vce'"
+    ereturn local vce          "none"
+    ereturn local residual_schema "1"
+    ereturn local residual_signature "`residual_signature'"
+    ereturn local version "0.5.3-dev11"
     ereturn local cmd          "convnls"
     if `q' > 0 {
-        ereturn matrix V_robust = `context_V_robust'
+        ereturn local inference_status "not_validated"
+        ereturn local context_diagnostic "`vce'"
+        ereturn local context_diagnostic_status "not_requested"
+        if "`vce'" != "none" {
+            ereturn local context_diagnostic_status "not_certified"
+            if inlist(`mata_converged',1,2) & `mata_admm_info'[1,1]==1 {
+                ereturn matrix V_context_diagnostic = `context_V'
+                ereturn matrix V_robust_diagnostic = `context_V_robust'
+                ereturn local context_diagnostic_status "legacy_formula_only"
+            }
+        }
         di as text ""
-        di as text "Context-variable coefficients (one-stage CNLS-z):"
-        ereturn display, level(`level')
+        di as text "Context-variable point estimates (joint additive CNLS):"
+        matrix list e(b), noheader
+        di as text "SEs, tests, and confidence intervals are not validated; e(V) is not posted."
+        if "`vce'" != "none" {
+            di as text "Requested legacy covariance diagnostic: `vce'; status: `e(context_diagnostic_status)'"
+        }
     }
+    restore, not
 end
 
 
@@ -310,6 +463,217 @@ end
 version 16.0
 mata:
 mata set matastrict on
+
+// Relative SVD threshold after unit normalization. This detects numerical
+// linear dependence; passing it is not a proof of nonlinear identification.
+real scalar _convnls_context_rank(real matrix A)
+{
+    real colvector s
+    s = svdsv(A)
+    if (max(s)==0) return(0)
+    return(sum(s :> 1e-10*max(s)))
+}
+
+void _convnls_context_check(string scalar inputs, string scalar context,
+                          string scalar touse)
+{
+    real matrix X, C
+    real scalar j, scale, rx
+    X = st_data(., inputs, touse)
+    C = st_data(., context, touse)
+    for (j=1; j<=cols(X); j++) {
+        X[.,j] = X[.,j] :- mean(X[.,j])
+        scale = sqrt(sum(X[.,j]:^2))
+        if (scale>0) X[.,j] = X[.,j]/scale
+    }
+    for (j=1; j<=cols(C); j++) {
+        C[.,j] = C[.,j] :- mean(C[.,j])
+        scale = sqrt(sum(C[.,j]:^2))
+        if (scale>0) C[.,j] = C[.,j]/scale
+    }
+    if (_convnls_context_rank(C)<cols(C)) {
+        errprintf("context() contains constant or numerically dependent columns\n")
+        _error(459)
+    }
+    rx = _convnls_context_rank(X)
+    if (_convnls_context_rank((X,C))<rx+cols(C)) {
+        errprintf("context() is numerically aliased with an affine function of inputs()\n")
+        _error(459)
+    }
+}
+
+// Compact two-block Afriat operator. Context columns are identically zero.
+struct _convnls_operator {
+    real scalar dense, n, p, q, sign, nvars, ncons, raw_rho
+    real matrix G, Gt, Z, pairs, zh, zhi, pi, ph
+    real colvector oi, oh, ui, uh, mono
+}
+
+// Continuation belongs to one fixed QP and its returned primal iterate.
+// The caller must invalidate it whenever Q, c, or the ordered constraints change.
+struct _convnls_admm_state {
+    real scalar valid, reused, nvars, ncons, rho, iteration, pending_rho, raw_rho
+    real scalar alpha, prev_primal, diverge_count, primal, dual, eps_primal, eps_dual
+    real colvector s, u
+}
+
+// Balance distance from the existing stopping thresholds, not raw residual units.
+// These ratios guide the penalty only; all four certification checks stay intact.
+real scalar _convnls_next_rho(real scalar rho, real scalar primal, real scalar dual,
+                            real scalar eps_primal, real scalar eps_dual)
+{
+    real scalar rp, rd
+    if (hasmissing((rho,primal,dual,eps_primal,eps_dual))) return(rho)
+    if (rho<=0 | primal<0 | dual<0 | eps_primal<=0 | eps_dual<=0) return(rho)
+    rp=primal/eps_primal
+    rd=dual/eps_dual
+    if (hasmissing((rp,rd))) return(rho)
+    // Bounds must not reverse the requested direction for an explicit rho()
+    // that starts outside them. Zero residuals are valid, including both zero.
+    if (rp/5 > rd & rho < 1e6) return(min((rho*2,1e6)))
+    if (rd/5 > rp & rho > 1e-6) return(max((rho/2,1e-6)))
+    return(rho)
+}
+
+// Raw is the exact dev4 residual-balancing policy, including its 0.1 floor.
+real scalar _convnls_penalty(real scalar rho, real scalar primal, real scalar dual,
+                           real scalar eps_primal, real scalar eps_dual,
+                           real scalar raw_rho)
+{
+    if (!raw_rho) return(_convnls_next_rho(rho,primal,dual,eps_primal,eps_dual))
+    if (primal > 5*dual & dual > 0) return(rho*2)
+    if (dual > 5*primal & primal > 0) return(max((rho/2,0.1)))
+    return(rho)
+}
+
+struct _convnls_operator scalar _convnls_pair_operator(real matrix X,
+    real matrix pairs, real scalar q, real scalar is_crs,
+    real scalar is_concave, real scalar do_mono)
+{
+    struct _convnls_operator scalar op
+    real scalar i, j, k, m, a
+    real colvector ids
+    op.dense=0
+    op.raw_rho=0
+    op.n=rows(X)
+    m=cols(X)
+    op.p=m+(!is_crs)
+    op.q=q
+    op.sign=is_concave ? -1 : 1
+    op.nvars=op.n*op.p+q
+    op.Z=is_crs ? X : (J(op.n,1,1),X)
+    op.pairs=pairs
+    a=rows(pairs)
+    op.mono=J(do_mono*op.n*m,1,0)
+    k=0
+    if (do_mono) for (i=1;i<=op.n;i++) for (j=1;j<=m;j++) {
+        k++
+        op.mono[k]=(i-1)*op.p+(!is_crs)+j
+    }
+    op.ncons=a+rows(op.mono)
+    op.G=op.Gt=J(0,0,0)
+    op.zh=op.zhi=J(0,op.p,0)
+    op.pi=op.ph=J(0,2,0)
+    op.oi=op.oh=op.ui=op.uh=J(0,1,0)
+    if (a) {
+        op.zh=op.Z[pairs[,2],.]
+        op.oi=order(pairs,1)
+        op.oh=order(pairs,2)
+        ids=pairs[op.oi,1]
+        op.pi=panelsetup(ids,1)
+        op.ui=ids[op.pi[,1]]
+        ids=pairs[op.oh,2]
+        op.ph=panelsetup(ids,1)
+        op.uh=ids[op.ph[,1]]
+        op.zhi=op.zh[op.oi,.]
+    }
+    return(op)
+}
+
+real colvector _convnls_op_times(struct _convnls_operator scalar op,
+                                real colvector d)
+{
+    real matrix D
+    real colvector out
+    real scalar a
+    if (op.dense) return(op.G*d)
+    if (hasmissing(d)) return(J(op.ncons,1,.))
+    a=rows(op.pairs)
+    out=J(op.ncons,1,0)
+    if (a) {
+        D=colshape(d[|1\op.n*op.p|],op.p)
+        out[|1\a|]=op.sign*rowsum(op.zh:*(D[op.pairs[,1],.]-D[op.pairs[,2],.]),1)
+    }
+    if (rows(op.mono)) out[|a+1\op.ncons|]=-d[op.mono]
+    return(out)
+}
+
+real colvector _convnls_op_transpose(struct _convnls_operator scalar op,
+                                    real colvector v)
+{
+    real matrix D
+    real colvector out
+    real scalar a
+    if (op.dense) return(op.Gt*v)
+    if (hasmissing(v)) return(J(op.nvars,1,.))
+    a=rows(op.pairs)
+    D=J(op.n,op.p,0)
+    if (a) {
+        D[op.ui,.]=panelsum(op.zhi,v[op.oi],op.pi)
+        D[op.uh,.]=D[op.uh,.]-panelsum(v[op.oh],op.ph):*op.Z[op.uh,.]
+    }
+    out=(op.sign*vec(D') \ J(op.q,1,0))
+    if (rows(op.mono)) out[op.mono]=out[op.mono]-v[|a+1\op.ncons|]
+    return(out)
+}
+
+real matrix _convnls_op_gram(struct _convnls_operator scalar op)
+{
+    real matrix out, zz
+    real rowvector ii, hh
+    real scalar k, a
+    if (op.dense) return(op.Gt*op.G)
+    out=J(op.nvars,op.nvars,0)
+    a=rows(op.pairs)
+    for (k=1;k<=a;k++) {
+        ii=(op.pairs[k,1]-1)*op.p:+(1..op.p)
+        hh=(op.pairs[k,2]-1)*op.p:+(1..op.p)
+        zz=op.zh[k,.]'*op.zh[k,.]
+        out[ii,ii]=out[ii,ii]+zz
+        out[hh,hh]=out[hh,hh]+zz
+        out[ii,hh]=out[ii,hh]-zz
+        out[hh,ii]=out[hh,ii]-zz
+    }
+    for (k=1;k<=rows(op.mono);k++) out[op.mono[k],op.mono[k]]=out[op.mono[k],op.mono[k]]+1
+    return(out)
+}
+
+real scalar _convnls_op_bytes(struct _convnls_operator scalar op)
+{
+    // Matrix payload only, excluding allocator overhead and temporary workspaces.
+    return(8*(length(op.Z)+length(op.pairs)+length(op.zh)+length(op.zhi)+
+              length(op.pi)+length(op.ph)+length(op.oi)+length(op.oh)+
+              length(op.ui)+length(op.uh)+length(op.mono)))
+}
+
+void _convnls_prune_pairs(real matrix pairs, real matrix added,
+    real matrix X, real colvector d, real scalar q, real scalar is_crs,
+    real scalar is_concave, real scalar tolerance, real scalar removed)
+{
+    struct _convnls_operator scalar op
+    real colvector slack, keep
+    real scalar k
+    op=_convnls_pair_operator(X,pairs,q,is_crs,is_concave,0)
+    slack=_convnls_op_times(op,d)
+    keep=selectindex(slack:> -tolerance)
+    for (k=1;k<=rows(pairs);k++) {
+        if (slack[k]<= -tolerance) added[pairs[k,1],pairs[k,2]]=0
+    }
+    removed=rows(pairs)-rows(keep)
+    pairs=rows(keep) ? pairs[keep,.] : J(0,2,0)
+}
+
+
 
 // ============================================================================
 // Main estimation
@@ -327,27 +691,33 @@ void _convnls_estimate(string scalar depvar_str, string scalar inputs_str,
                     string scalar vcstrat_str, string scalar vce_str,
                     real scalar adamiter, real scalar adamlr,
                     real scalar adamlambda, real scalar adamscreen,
-                    string scalar verbose_str)
+                    string scalar verbose_str, string scalar rho_policy)
 {
-    real matrix    X, X_raw, C, C_raw, C_center, ZtZ, G_mono, G_afriat, G_full
-    real matrix    beta_curr, violations, new_rows, cp_history
+    real matrix    X, X_raw, C, C_raw, C_center, ZtZ
+    real matrix    beta_curr, violations, cp_history
     real colvector y, y_raw, obs_idx, Zty, delta, alpha_curr
     real colvector resid, resid_scaled, fitted, x_scale, c_mean, c_scale
     real colvector theta_scaled, theta_orig
     real matrix    context_V, context_V_robust, XtX_inv, meat
     real rowvector zi, ci
     real scalar    N, m, q, p, p_local, verbose, i, j, base, cbase
-    real scalar    cp_iter, max_viol, n_active_afriat, row_mono
+    real scalar    cp_iter, max_viol, n_active_afriat
     real scalar    resid_idx, fitted_idx, alpha_idx, beta_j_idx
     real scalar    n_mono_viol, rho, inner_tol
     real scalar    y_mean, y_sd, n_pruned, n_new_unique
-    real scalar    near_converge_count, max_viol_hold, n_viol_hold
+    real scalar near_converge_count, converged, n_viol, max_mono
+    real scalar total_inner_iters, inner_solves, warm_starts
+    struct _convnls_admm_state scalar admm_state
+    real rowvector admm_info
+    real rowvector factor_stats
+    string scalar stop_reason
     // Constraint tracking: N x N matrix, 1 if (i,h) already added
     real matrix    added_pairs
     real scalar    is_crs
     real matrix    G_pairs
+    real scalar peak_operator_bytes, peak_dense_bytes
+    struct _convnls_operator scalar op
     real matrix    init_pairs
-    real colvector delta_hold
 
     verbose = (verbose_str != "")
 
@@ -447,49 +817,36 @@ void _convnls_estimate(string scalar depvar_str, string scalar inputs_str,
     }
 
     // ---- OLS initialization ----
-    delta = _convnls_init_ols(y, X, C, N, m, q, p_local, is_crs)
+    delta = _convnls_init_ols(y, X, C, N, m, q, p_local, is_crs, do_mono)
     if (verbose) printf("{txt}OLS init done, rho=%6.2f\n", rho)
-
-    // ---- Monotonicity constraints ----
-    if (do_mono) {
-        G_mono = J(N*m, p, 0)
-        row_mono = 0
-        for (i = 1; i <= N; i++) {
-            base = (i-1)*p_local
-            for (j = 1; j <= m; j++) {
-                row_mono++
-                if (is_crs) {
-                    G_mono[row_mono, base + j] = -1
-                }
-                else {
-                    G_mono[row_mono, base + 1 + j] = -1
-                }
-            }
-        }
-    }
-    else {
-        G_mono = J(0, p, 0)
-    }
 
     // ---- Initialize constraint tracking ----
     added_pairs = J(N, N, 0)
 
-    // ---- Cutting Plane Main Loop ----
-    G_afriat = J(0, p, 0)
-    G_pairs  = J(0, 2, 0)
+    // ---- Cutting plane: solve first, then certify the returned iterate ----
+    G_pairs = J(0, 2, 0)
     n_active_afriat = 0
     near_converge_count = 0
+    converged = 0
+    stop_reason = "maxcut"
+    total_inner_iters = 0
+    inner_solves = 0
+    warm_starts = 0
+    admm_state.valid = 0
+    admm_info = J(1, 15, .)
+    factor_stats = J(1, 4, 0)
+    peak_operator_bytes=peak_dense_bytes=0
+    max_viol = .
+    n_new_unique = 0
 
-    // ---- Init: pre-populate Afriat constraints (ele, sweet, or adam) ----
     if (init_str != "none") {
-        if (verbose) printf("{txt}Init (%s): computing initial constraint set...\n", init_str)
         if (init_str == "ele") {
             init_pairs = _convnls_init_ele(X, N, added_pairs)
         }
         else if (init_str == "sweet") {
             init_pairs = _convnls_init_sweet(X, N, sweetpct_val, added_pairs)
         }
-        else {   // adam
+        else {
             delta = _convnls_init_adam(delta, y, X, ZtZ, Zty, N, m, p_local,
                                      is_crs, do_mono, is_concave,
                                      adamiter, adamlr, adamlambda,
@@ -506,178 +863,110 @@ void _convnls_estimate(string scalar depvar_str, string scalar inputs_str,
             }
         }
         if (rows(init_pairs) > 0) {
-            new_rows        = _convnls_build_afriat_rows(init_pairs, X, N, m, p_local, q, is_concave, is_crs)
-            G_afriat        = new_rows
-            G_pairs         = init_pairs[., 1..2]
-            n_active_afriat = rows(G_afriat)
-            G_full = G_afriat \ G_mono
-            if (verbose) {
-                printf("{txt}  %g initial constraints; solving ADMM...\n", n_active_afriat)
-            }
-            delta = _convnls_admm_solve(ZtZ, Zty, G_full, delta, rho, tol, maxiter, verbose)
+            G_pairs = init_pairs[., 1..2]
         }
     }
 
     printf("{txt}\nCutting Plane:\n")
     printf("{txt}  %4s  %7s  %7s  %7s  %10s\n",
            "Iter", "Active", "Violat", "NewAdd", "Max Viol")
-    printf("{txt}  {hline 45}\n")
     cp_history = J(0, 5, .)
 
     for (cp_iter = 1; cp_iter <= maxcut; cp_iter++) {
-
+        // Any pruning is followed by a solve; an old certificate cannot survive it.
+        if (prune_tol > 0 & rows(G_pairs) > 0 & cp_iter > 3) {
+            _convnls_prune_pairs(G_pairs, added_pairs, X, delta, q, is_crs,
+                                is_concave, prune_tol, n_pruned)
+            if (n_pruned > 0) admm_state.valid = 0
+        }
+        n_active_afriat = rows(G_pairs)
+        op=_convnls_pair_operator(X,G_pairs,q,is_crs,is_concave,do_mono)
+        op.raw_rho=(rho_policy=="raw")
+        peak_operator_bytes=max((peak_operator_bytes,_convnls_op_bytes(op)))
+        peak_dense_bytes=max((peak_dense_bytes,8*op.ncons*op.nvars))
+        inner_tol = tol * 0.1
+        if (max_viol < . & max_viol >= 30*tol & n_new_unique > 0) {
+            inner_tol = max((0.01*max_viol, tol))
+        }
+        delta = _convnls_admm_resume(ZtZ, Zty, op, delta, rho,
+                                  inner_tol, maxiter, verbose, admm_info, admm_state)
+        total_inner_iters = total_inner_iters + admm_info[2]
+        inner_solves++
+        warm_starts = warm_starts + admm_state.reused
+        factor_stats = factor_stats + admm_info[12..15]
         _convnls_extract(delta, N, m, p_local, is_crs, alpha_curr, beta_curr)
+        violations = _convnls_separate(alpha_curr, beta_curr, X, N, tol,
+                                      is_concave, added_pairs, vcstrat_str,
+                                      addper, max_viol, n_viol)
+        max_mono = do_mono ? max((0, -min(beta_curr))) : 0
 
-        violations = _convnls_find_violations(alpha_curr, beta_curr, X,
-                                            N, m, tol, is_concave)
-
-        if (rows(violations) == 0) {
-            max_viol = 0
-        }
-        else {
-            max_viol = max(violations[., 3])
-        }
-
-        n_pruned = 0
-        if (prune_tol > 0 & n_active_afriat > 0 & cp_iter > 3) {
-            _convnls_prune(G_afriat, G_pairs, added_pairs, delta, prune_tol,
-                         N, m, p, n_pruned)
-            n_active_afriat = rows(G_afriat)
-        }
-
-        if (max_viol <= tol) {
-            printf("{txt}  %4.0f  %7.0f  %7.0f  %7s  %10.2e  *\n",
-                   cp_iter, n_active_afriat, rows(violations), "--", max_viol)
-            cp_history = cp_history \ (cp_iter, n_active_afriat, rows(violations), 0, max_viol)
-            printf("{txt}  Converged.\n")
-            st_numscalar("r(converged)", 1)
-            st_numscalar("r(cp_iters)", cp_iter)
-            st_numscalar("r(n_active)", n_active_afriat)
-            st_numscalar("r(max_viol)", max_viol)
-            st_matrix("r(cp_history)", cp_history)
-            break
-        }
-
-        if (max_viol < 30 * tol) {
-            near_converge_count = near_converge_count + 1
-        }
-        else {
-            near_converge_count = 0
-        }
-
-        if (near_converge_count >= 2) {
-            delta_hold    = delta
-            max_viol_hold = max_viol
-            n_viol_hold   = rows(violations)
-            rho = max((rho, 1.0))
-            G_full = G_afriat \ G_mono
-            if (verbose) {
-                printf("{txt}  Near-converged, final tight solve...\n")
-            }
-            delta = _convnls_admm_solve(ZtZ, Zty, G_full, delta,
-                                      rho, tol * 0.1, maxiter, verbose)
-
+        // A loose intermediate solve is never a convergence certificate.
+        if (max_viol < 30*tol & max_mono <= tol & inner_tol > tol & admm_info[1] >= 0) {
+            delta = _convnls_admm_resume(ZtZ, Zty, op, delta, rho,
+                                      tol*0.1, maxiter, verbose, admm_info, admm_state)
+            total_inner_iters = total_inner_iters + admm_info[2]
+            inner_solves++
+            warm_starts = warm_starts + admm_state.reused
+            factor_stats = factor_stats + admm_info[12..15]
             _convnls_extract(delta, N, m, p_local, is_crs, alpha_curr, beta_curr)
-            violations = _convnls_find_violations(alpha_curr, beta_curr, X,
-                                                N, m, tol, is_concave)
-            if (rows(violations) == 0) {
-                max_viol = 0
-            }
-            else {
-                max_viol = max(violations[., 3])
-            }
+            violations = _convnls_separate(alpha_curr, beta_curr, X, N, tol,
+                                          is_concave, added_pairs, vcstrat_str,
+                                          addper, max_viol, n_viol)
+            max_mono = do_mono ? max((0, -min(beta_curr))) : 0
+        }
 
-            printf("{txt}  %4.0f  %7.0f  %7.0f  %7s  %10.2e  **\n",
-                   cp_iter, n_active_afriat, rows(violations), "final", max_viol)
-
-            if (max_viol > max_viol_hold) {
-                delta    = delta_hold
-                max_viol = max_viol_hold
-                printf("{txt}  Final solve worsened feasibility; retaining previous iterate (max_viol=%9.2e).\n", max_viol)
-                cp_history = cp_history \ (cp_iter, n_active_afriat, n_viol_hold, -2, max_viol)
-            }
-            else {
-                cp_history = cp_history \ (cp_iter, n_active_afriat, rows(violations), -1, max_viol)
-            }
-
+        if (admm_info[1] == 1 & admm_info[11] <= tol & max_mono <= tol & max_viol < 30*tol) {
+            near_converge_count++
             if (max_viol <= tol) {
-                printf("{txt}  Converged (after final solve).\n")
-                st_numscalar("r(converged)", 1)
+                converged = 1
+                stop_reason = "converged"
             }
-            else {
-                printf("{txt}  Practically converged (max_viol=%9.2e).\n", max_viol)
-                st_numscalar("r(converged)", 2)
+            else if (near_converge_count >= 2) {
+                converged = 2
+                stop_reason = "practical"
             }
-            st_numscalar("r(cp_iters)", cp_iter)
-            st_numscalar("r(n_active)", n_active_afriat)
-            st_numscalar("r(max_viol)", max_viol)
-            st_matrix("r(cp_history)", cp_history)
+        }
+        else near_converge_count = 0
+
+        n_new_unique = rows(violations)
+        if (converged > 0 | cp_iter == maxcut | admm_info[1] < 0) n_new_unique = 0
+        cp_history = cp_history \ (cp_iter, n_active_afriat, n_viol, n_new_unique, max_viol)
+        printf("{txt}  %4.0f  %7.0f  %7.0f  %7.0f  %10.2e\n",
+               cp_iter, n_active_afriat, n_viol, n_new_unique, max_viol)
+        if (admm_info[1] < 0) {
+            stop_reason = "inner_failure"
             break
         }
+        if (converged > 0 | cp_iter == maxcut) break
 
-        if (vcstrat_str == "group") {
-            violations = _convnls_filter_group(violations, N)
+        if (n_new_unique > 0) {
+            _convnls_mark_added(violations, added_pairs)
+            G_pairs = G_pairs \ violations[., 1..2]
+            admm_state.valid = 0
         }
-        else if (vcstrat_str == "one") {
-            if (rows(violations) > 0) {
-                violations = _convnls_sort_desc(violations, 3)
-                violations = violations[1, .]
-            }
-        }
-        else {
-            if (addper > 0 & rows(violations) > addper) {
-                violations = _convnls_sort_desc(violations, 3)
-                violations = violations[1..addper, .]
-            }
-        }
-
-        n_new_unique = rows(violations)  // post-vcstrat, pre-dedup
-
-        violations = _convnls_filter_new(violations, added_pairs)
-
-        printf("{txt}  %4.0f  %7.0f  %7.0f  %7.0f  %10.2e\n",
-               cp_iter, n_active_afriat, n_new_unique, rows(violations), max_viol)
-        cp_history = cp_history \ (cp_iter, n_active_afriat, n_new_unique, rows(violations), max_viol)
-
-        if (rows(violations) == 0) {
-            // All violated constraints are already active; tighten feasibility.
-            if (verbose) {
-                printf("{txt}  No new constraints; boosting rho and re-solving\n")
-            }
-            rho = max((rho, 1.0))
-            G_full = G_afriat \ G_mono
-            delta = _convnls_admm_solve(ZtZ, Zty, G_full, delta,
-                                      rho, tol * 0.1, maxiter, verbose)
-            near_converge_count = near_converge_count + 1
-            continue
-        }
-
-        // Mark pairs as added
-        _convnls_mark_added(violations, added_pairs)
-
-        // Build and append
-        new_rows = _convnls_build_afriat_rows(violations, X, N, m, p_local, q, is_concave, is_crs)
-        G_afriat = G_afriat \ new_rows
-        G_pairs  = G_pairs  \ violations[., 1..2]
-        n_active_afriat = rows(G_afriat)
-
-        G_full = G_afriat \ G_mono
-
-        // Adaptive inner tolerance
-        inner_tol = max((0.01 * max_viol, tol))
-
-        delta = _convnls_admm_solve(ZtZ, Zty, G_full, delta,
-                                  rho, inner_tol, maxiter, verbose)
-
-        if (cp_iter == maxcut) {
-            printf("{txt}  Warning: max cutting plane iters\n")
-            st_numscalar("r(converged)", 0)
-            st_numscalar("r(cp_iters)", cp_iter)
-            st_numscalar("r(n_active)", n_active_afriat)
-            st_numscalar("r(max_viol)", max_viol)
-            st_matrix("r(cp_history)", cp_history)
-        }
+        // With no new constraints, retain the complete ADMM state and rho.
     }
+
+    // All diagnostics refer to the last returned iterate, including budget exits.
+    if (converged == 0 & admm_info[1] == 0) stop_reason = "inner_maxiter"
+    st_numscalar("r(converged)", converged)
+    st_numscalar("r(cp_iters)", cp_iter)
+    st_numscalar("r(n_active)", n_active_afriat)
+    st_numscalar("r(max_viol)", max_viol)
+    st_numscalar("r(max_mono)", max_mono)
+    st_numscalar("r(total_inner_iters)", total_inner_iters)
+    st_numscalar("r(inner_solves)", inner_solves)
+    st_numscalar("r(warm_starts)", warm_starts)
+    st_numscalar("r(final_rho)", rho)
+    st_numscalar("r(constraint_bytes)",peak_operator_bytes)
+    st_numscalar("r(dense_constraint_bytes)",peak_dense_bytes)
+    st_matrix("r(factor_stats)", factor_stats)
+    st_global("r(stop_reason)", stop_reason)
+    st_matrix("r(cp_history)", cp_history)
+    st_matrix("r(admm_info)", admm_info)
+    if (converged == 0) printf("{txt}  Not converged (%s).\n", stop_reason)
+    else if (converged == 1) printf("{txt}  Converged: inner optimality and global shape checks passed.\n")
+    else printf("{txt}  Practically converged: inner optimality passed; global Afriat violation < 30*tol.\n")
 
     // ---- Unscale and store ----
     _convnls_extract(delta, N, m, p_local, is_crs, alpha_curr, beta_curr)
@@ -781,7 +1070,7 @@ void _convnls_estimate(string scalar depvar_str, string scalar inputs_str,
 real colvector _convnls_init_ols(real colvector y, real matrix X, real matrix C,
                                real scalar N, real scalar m, real scalar q,
                                real scalar p,
-                               real scalar is_crs)
+                               real scalar is_crs, real scalar do_mono)
 {
     real colvector delta, beta_ols, resid_ols, coef, xi
     real matrix    X_const, XX, Xy
@@ -797,7 +1086,7 @@ real colvector _convnls_init_ols(real colvector y, real matrix X, real matrix C,
             if (denom < 1e-10) denom = 1e-10
             scale_i = y[i] / denom
             for (j = 1; j <= m; j++) {
-                delta[base + j] = max((scale_i * xi[j], 0))
+                delta[base + j] = do_mono ? max((scale_i * xi[j], 0)) : scale_i * xi[j]
             }
         }
     }
@@ -817,7 +1106,7 @@ real colvector _convnls_init_ols(real colvector y, real matrix X, real matrix C,
             base = (i-1)*p
             delta[base + 1] = alpha_ols + resid_ols[i]
             for (j = 1; j <= m; j++) {
-                delta[base + 1 + j] = max((beta_ols[j], 0))
+                delta[base + 1 + j] = do_mono ? max((beta_ols[j], 0)) : beta_ols[j]
             }
         }
         if (q > 0) {
@@ -983,52 +1272,78 @@ void _convnls_extract(real colvector delta, real scalar N, real scalar m,
 // Convex:  need g_i(x_h) <= g_h(x_h), violation when > +tol
 // Returns K x 3: (i, h, |violation|)
 // ============================================================================
+// Complete separation with bounded candidate storage. Global diagnostics include
+// active pairs and violations below tol; candidate selection includes NEW pairs only.
+real matrix _convnls_separate(real colvector alpha, real matrix beta,
+                             real matrix X, real scalar N, real scalar tol,
+                             real scalar is_concave, real matrix added_pairs,
+                             string scalar strategy, real scalar cap,
+                             real scalar max_viol, real scalar n_viol)
+{
+    real scalar h, k, i, limit, n_keep, take
+    real colvector v, idx, best, best_h, ord
+    real matrix candidates, batch
+    max_viol = 0
+    n_viol = 0
+    candidates = J(0, 3, 0)
+    best = J(N, 1, 0)
+    best_h = J(N, 1, 0)
+    limit = cap > 0 ? min((cap, N*(N-1))) : min((200000, N*(N-1)))
+    if (strategy == "one") limit = 1
+    for (h = 1; h <= N; h++) {
+        v = alpha :- alpha[h] :+ (beta :- beta[h,.]) * X[h,.]'
+        if (is_concave) v = -v
+        v[h] = 0
+        max_viol = max((max_viol, max(v)))
+        n_viol = n_viol + sum(v :> tol)
+        idx = selectindex((v :> tol) :& (added_pairs[.,h] :== 0))
+        if (rows(idx) == 0) continue
+        if (strategy == "group") {
+            for (k = 1; k <= rows(idx); k++) {
+                i = idx[k]
+                if (v[i] > best[i]) {
+                    best[i] = v[i]
+                    best_h[i] = h
+                }
+            }
+        }
+        else {
+            batch = (idx, J(rows(idx), 1, h), v[idx])
+            candidates = candidates \ batch
+            // Reserve at most two candidate batches before selecting the top K.
+            // Unlike the old cap, this NEVER terminates the full scan.
+            if (rows(candidates) > 2*limit) {
+                ord = order(candidates, (-3, 1, 2))
+                candidates = candidates[ord[1..limit], .]
+            }
+        }
+    }
+    if (strategy == "group") {
+        idx = selectindex(best_h :> 0)
+        if (rows(idx) == 0) return(J(0, 3, 0))
+        return((idx, best_h[idx], best[idx]))
+    }
+    n_keep = rows(candidates)
+    if (n_keep > limit) {
+        ord = order(candidates, (-3, 1, 2))
+        take = min((n_keep, limit))
+        candidates = candidates[ord[1..take], .]
+    }
+    return(candidates)
+}
+
+// Warm-start callers need only candidates, but still scan the entire sample.
 real matrix _convnls_find_violations(real colvector alpha, real matrix beta,
                                    real matrix X, real scalar N,
                                    real scalar m, real scalar tol,
                                    real scalar is_concave)
 {
-    real matrix  viol_list
-    real colvector v, idx, vals
-    real scalar  h, n_viol, max_store, n_take, room
-
-    max_store = min((N*(N-1), 200000))
-    viol_list = J(max_store, 3, 0)
-    n_viol = 0
-
-    for (h = 1; h <= N; h++) {
-        v = alpha :- alpha[h] :+ (beta :- beta[h,.]) * X[h,.]'
-        v[h] = 0
-
-        if (is_concave) {
-            idx  = selectindex(v :< -tol)
-            vals = -v[idx]
-        }
-        else {
-            idx  = selectindex(v :> tol)
-            vals = v[idx]
-        }
-
-        if (rows(idx) == 0) continue
-
-        room = max_store - n_viol
-        if (room <= 0) break
-        n_take = min((rows(idx), room))
-
-        viol_list[|n_viol + 1, 1 \ n_viol + n_take, 1|] = idx[1..n_take]
-        viol_list[|n_viol + 1, 2 \ n_viol + n_take, 2|] = J(n_take, 1, h)
-        viol_list[|n_viol + 1, 3 \ n_viol + n_take, 3|] = vals[1..n_take]
-        n_viol = n_viol + n_take
-
-        if (n_viol >= max_store) {
-            break
-        }
-    }
-
-    if (n_viol == 0) return(J(0, 3, 0))
-    return(viol_list[1..n_viol, .])
+    real matrix empty_pairs
+    real scalar max_viol, n_viol
+    empty_pairs = J(N, N, 0)
+    return(_convnls_separate(alpha, beta, X, N, tol, is_concave,
+                            empty_pairs, "all", 0, max_viol, n_viol))
 }
-
 
 // ============================================================================
 // Filter violations to only new (i,h) pairs not already in added_pairs
@@ -1192,146 +1507,226 @@ void _convnls_prune(real matrix G_afriat, real matrix G_pairs,
 // min (1/2) d'Qd - c'd  s.t.  Gd <= 0
 // Over-relaxation alpha=1.6, adaptive rho with floor
 // ============================================================================
+// info: status iterations primal dual eps_primal eps_dual stationarity
+//       eps_stationarity complementarity eps_complementarity tolerance
+//       factorizations chol_solves lu_fallbacks rho_updates
+// status: 1 certified, 0 iteration limit, -1 numerical failure.
 real colvector _convnls_admm_solve(real matrix ZtZ, real colvector Zty,
                                  real matrix G, real colvector delta0,
                                  real scalar rho, real scalar tol,
-                                 real scalar maxiter, real scalar verbose)
+                                 real scalar maxiter, real scalar verbose,
+                                 real rowvector info)
 {
-    real scalar    n_vars, n_con, k, i, reg
-    real scalar    r_pri, r_dual, eps_pri, eps_dual
-    real scalar    alpha_relax, new_rho, prev_r_pri
-    real scalar    diverge_count
-    real matrix    H, GtG, Gt
-    real colvector delta, s, s_old, u, Gdelta, Gdelta_hat, rhs
+    struct _convnls_operator scalar op
+    op.dense=1
+    op.raw_rho=0
+    op.G=G
+    op.Gt=G'
+    op.nvars=cols(G)
+    op.ncons=rows(G)
+    return(_convnls_admm_core(ZtZ,Zty,op,delta0,rho,tol,maxiter,verbose,info))
+}
 
-    n_vars = cols(G)
-    n_con  = rows(G)
+real colvector _convnls_admm_core(real matrix ZtZ, real colvector Zty,
+                                 struct _convnls_operator scalar op, real colvector delta0,
+                                 real scalar rho, real scalar tol,
+                                 real scalar maxiter, real scalar verbose,
+                                 real rowvector info)
+{
+    struct _convnls_admm_state scalar state
+    state.valid=0
+    return(_convnls_admm_resume(ZtZ,Zty,op,delta0,rho,tol,maxiter,verbose,info,state))
+}
 
+// Bound normalized adaptation within each unchanged QP. Continuing the same
+// state keeps this clock; rebuilding the working set starts a new clock.
+// A constant tail avoids sustained residual oscillation from penalty switching.
+// raw deliberately retains the dev4 schedule. This is not an iteration limit.
+real scalar _convnls_penalty_due(real scalar iteration, real scalar raw_rho)
+{
+    return(iteration > 0 & mod(iteration,100)==0 & (raw_rho==1 | iteration<5000))
+}
+
+real colvector _convnls_admm_resume(real matrix ZtZ, real colvector Zty,
+                                 struct _convnls_operator scalar op, real colvector delta0,
+                                 real scalar rho, real scalar tol,
+                                 real scalar maxiter, real scalar verbose,
+                                 real rowvector info, struct _convnls_admm_state scalar state)
+{
+    real scalar n_vars, n_con, k, i, reg, r_pri, r_dual, eps_pri, eps_dual
+    real scalar alpha_relax, new_rho, prev_r_pri, diverge_count
+    real scalar stationarity, eps_stat, comp, eps_comp
+    real scalar factor_dirty, factor_ok, offset, iteration, regular_check, raw_rho
+    real matrix H, GtG, L, Lt
+    real colvector delta, delta_prev, s, s_old, u, Gdelta, Gdelta_hat, rhs, grad, dual_term
+    raw_rho=(op.raw_rho==1)
+    n_vars = op.nvars
+    n_con = op.ncons
+    info = (0, 0, ., ., ., ., ., ., ., ., tol, 0, 0, 0, 0)
+    state.reused=0
     if (n_con == 0) {
-        return(cholsolve(ZtZ + 1e-8*I(n_vars), Zty))
-    }
-
-    alpha_relax = 1.6
-
-    Gt  = G'
-    GtG = Gt * G
-    reg = 1e-8
-    H   = ZtZ + rho * GtG + reg * I(n_vars)
-
-    delta  = delta0
-    Gdelta = G * delta
-    s      = J(n_con, 1, 0)
-    for (i = 1; i <= n_con; i++) {
-        s[i] = min((Gdelta[i], 0))
-    }
-    u = J(n_con, 1, 0)
-
-    r_pri  = .
-    r_dual = .
-    prev_r_pri = .
-    diverge_count = 0
-
-    for (k = 1; k <= maxiter; k++) {
-
-        rhs   = Zty + rho * Gt * (s - u)
-        delta = cholsolve(H, rhs)
-
+        state.valid=0
+        delta = invsym(ZtZ) * Zty
         if (hasmissing(delta)) {
-            delta = lusolve(H, rhs)
-            if (hasmissing(delta)) {
-                printf("{err}ADMM: solve failed at iter %g\n", k)
-                return(delta0)
+            info[1] = -1
+            return(delta0)
+        }
+        grad = ZtZ * delta
+        stationarity = max(abs(grad - Zty))
+        eps_stat = tol + tol*max((max(abs(grad)), max(abs(Zty))))
+        info[1..11] = ((stationarity <= eps_stat ? 1 : -1), 0, 0, 0, tol, tol,
+                stationarity, eps_stat, 0, tol, tol)
+        return(delta)
+    }
+
+    delta = delta0
+    Gdelta = _convnls_op_times(op, delta)
+    if (state.valid == 1) {
+        if (state.nvars != n_vars | state.ncons != n_con | state.raw_rho != raw_rho) state.valid=0
+        else if (rows(state.s)!=n_con | rows(state.u)!=n_con) state.valid=0
+        else if (hasmissing(state.s) | hasmissing(state.u)) state.valid=0
+    }
+    if (state.valid == 1) {
+        s=state.s
+        u=state.u
+        rho=state.rho
+        offset=state.iteration
+        alpha_relax=state.alpha
+        prev_r_pri=state.prev_primal
+        diverge_count=state.diverge_count
+        state.reused=1
+        // Defer a penalty update at a budget boundary until continuation starts.
+        if (state.pending_rho & _convnls_penalty_due(state.iteration,raw_rho)) {
+            new_rho=_convnls_penalty(rho,state.primal,state.dual,
+                                      state.eps_primal,state.eps_dual,raw_rho)
+            if (new_rho != rho) {
+                u=u:*(rho/new_rho)
+                rho=new_rho
+                info[15]=info[15]+1
             }
         }
-
-        Gdelta = G * delta
-        Gdelta_hat = alpha_relax * Gdelta + (1 - alpha_relax) * s
-
-        s_old = s
-        s     = Gdelta_hat + u
-        for (i = 1; i <= n_con; i++) {
-            s[i] = min((s[i], 0))
+    }
+    else {
+        s = rowmin((Gdelta, J(n_con, 1, 0)))
+        u = J(n_con, 1, 0)
+        offset=0
+        alpha_relax=1.6
+        prev_r_pri=.
+        diverge_count=0
+    }
+    GtG = _convnls_op_gram(op)
+    reg = 1e-8
+    H = ZtZ + rho * GtG + reg * I(n_vars)
+    factor_dirty = 1
+    factor_ok = 0
+    for (k = 1; k <= maxiter; k++) {
+        iteration=offset+k
+        delta_prev = delta
+        // Proximal stabilization: matched RHS term preserves the unregularized QP.
+        rhs = Zty + rho * _convnls_op_transpose(op, s - u) + reg * delta_prev
+        // H changes only when rho changes within this restricted solve.
+        // A new function call starts a fresh cache for its new working set.
+        if (factor_dirty) {
+            L = cholesky(H)
+            info[12] = info[12] + 1
+            factor_ok = !hasmissing(L)
+            if (factor_ok) {
+                // Match cholsolve()'s default singularity threshold, rather
+                // than silently accepting a generalized triangular solution.
+                factor_ok = min(diagonal(L)) > 1e-13*mean(abs(diagonal(L)))
+            }
+            if (factor_ok) Lt = L'
+            factor_dirty = 0
         }
-
+        if (factor_ok) {
+            delta = solveupper(Lt, solvelower(L, rhs))
+            info[13] = info[13] + 1
+        }
+        else delta = J(n_vars, 1, .)
+        if (hasmissing(delta)) {
+            info[14] = info[14] + 1
+            delta = lusolve(H, rhs)
+        }
+        if (hasmissing(delta)) {
+            state.valid=0
+            info[1] = -1
+            info[2] = k
+            info[3..10] = J(1, 8, .)
+            return(delta_prev)
+        }
+        Gdelta = _convnls_op_times(op, delta)
+        Gdelta_hat = alpha_relax * Gdelta + (1-alpha_relax)*s
+        s_old = s
+        s = rowmin((Gdelta_hat + u, J(n_con, 1, 0)))
         u = u + Gdelta_hat - s
 
-        // Convergence check every 25 iters
-        if (mod(k, 25) == 0 | k <= 5) {
-            r_pri  = sqrt(sum((Gdelta - s):^2))
-            r_dual = rho * sqrt(sum((Gt * (s - s_old)):^2))
-
-            eps_pri  = sqrt(n_con)  * tol +
-                       tol * max((sqrt(sum(Gdelta:^2)), sqrt(sum(s:^2))))
-            eps_dual = sqrt(n_vars) * tol +
-                       tol * sqrt(sum((rho * Gt * u):^2))
-
-            if (verbose & mod(k, 1000) == 0) {
-                printf("{txt}    ADMM %5.0f: r_p=%9.2e r_d=%9.2e rho=%5.2f\n",
-                       k, r_pri, r_dual, rho)
-            }
-
-            if (r_pri < eps_pri & r_dual < eps_dual) {
-                if (verbose) {
-                    printf("{txt}    ADMM converged at iter %g (rho=%6.2f)\n", k, rho)
-                }
+        // Always measure the last iterate, even when maxiter is not a multiple of 25.
+        regular_check=(mod(iteration,25)==0 | iteration<=5)
+        if (regular_check | k == maxiter) {
+            dual_term = rho * _convnls_op_transpose(op, u)
+            grad = ZtZ * delta
+            r_pri = max(abs(Gdelta - s))
+            r_dual = rho * max(abs(_convnls_op_transpose(op, s - s_old)))
+            eps_pri = tol + tol * max((max(abs(Gdelta)), max(abs(s))))
+            eps_dual = tol + tol * max(abs(dual_term))
+            stationarity = max(abs(grad - Zty + dual_term))
+            eps_stat = tol + tol * max((max(abs(grad)), max(abs(Zty)), max(abs(dual_term))))
+            comp = max(abs(s :* (rho*u)))
+            eps_comp = tol + tol * max(abs(s)) * max(abs(rho*u))
+            info[1..11] = (0, k, r_pri, r_dual, eps_pri, eps_dual,
+                    stationarity, eps_stat, comp, eps_comp, tol)
+            if (r_pri <= eps_pri & r_dual <= eps_dual &
+                stationarity <= eps_stat & comp <= eps_comp) {
+                info[1] = 1
                 break
             }
-
-            // Divergence detection: r_pri growing for 3 checks
-            if (prev_r_pri < . & r_pri > 10 * prev_r_pri) {
-                diverge_count = diverge_count + 1
+            if (verbose & mod(k,1000) == 0) {
+                printf("{txt}    ADMM %g: primal=%9.2e dual=%9.2e stationarity=%9.2e\n",
+                       k, r_pri, r_dual, stationarity)
             }
-            else {
-                diverge_count = 0
+            // Final-only diagnostics must not alter the continuation schedule.
+            if (regular_check) {
+                if (prev_r_pri < . & r_pri > 10*prev_r_pri) diverge_count++
+                else diverge_count = 0
+                prev_r_pri = r_pri
             }
-            prev_r_pri = r_pri
-
             if (diverge_count >= 3) {
-                // Reset: reduce over-relaxation and restart u
-                if (verbose) {
-                    printf("{txt}    ADMM diverging, reset at iter %g\n", k)
-                }
-                alpha_relax = 1.0  // disable over-relaxation
-                u = J(n_con, 1, 0) // reset dual
-                s = Gdelta
-                for (i = 1; i <= n_con; i++) {
-                    s[i] = min((s[i], 0))
-                }
+                alpha_relax = 1
+                u = J(n_con,1,0)
+                s = rowmin((Gdelta, J(n_con,1,0)))
                 diverge_count = 0
                 prev_r_pri = .
             }
         }
-
-        // Adaptive rho every 100 iters; scale u only when rho changes.
-        if (mod(k, 100) == 0 & r_pri < . & r_dual < .) {
-            if (r_pri > 5 * r_dual & r_dual > 0) {
-                new_rho = rho * 2
-                if (new_rho != rho) {
-                    u   = u :* (rho / new_rho)
-                    rho = new_rho
-                    H   = ZtZ + rho * GtG + reg * I(n_vars)
-                }
-            }
-            else if (r_dual > 5 * r_pri & r_pri > 0) {
-                new_rho = max((rho / 2, 0.1))
-                if (new_rho != rho) {
-                    u   = u :* (rho / new_rho)
-                    rho = new_rho
-                    H   = ZtZ + rho * GtG + reg * I(n_vars)
-                }
+        if (_convnls_penalty_due(iteration,raw_rho) & k < maxiter) {
+            new_rho = _convnls_penalty(rho,r_pri,r_dual,eps_pri,eps_dual,raw_rho)
+            if (new_rho != rho) {
+                u = u :* (rho/new_rho)
+                rho = new_rho
+                H = ZtZ + rho*GtG + reg*I(n_vars)
+                factor_dirty = 1
+                info[15] = info[15] + 1
             }
         }
     }
-
-    if (k > maxiter) {
-        if (verbose) {
-            printf("{txt}    ADMM maxiter (%g)\n", maxiter)
-        }
-    }
-
+    state.valid=1
+    state.raw_rho=raw_rho
+    state.nvars=n_vars
+    state.ncons=n_con
+    state.s=s
+    state.u=u
+    state.rho=rho
+    state.iteration=offset+info[2]
+    state.alpha=alpha_relax
+    state.prev_primal=prev_r_pri
+    state.diverge_count=diverge_count
+    state.primal=info[3]
+    state.dual=info[4]
+    state.eps_primal=info[5]
+    state.eps_dual=info[6]
+    state.pending_rho=(info[1]==0 & _convnls_penalty_due(state.iteration,raw_rho))
     return(delta)
 }
-
 
 // ============================================================================
 // Sort matrix descending by column

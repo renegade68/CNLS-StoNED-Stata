@@ -4,8 +4,9 @@ Academic Free License 3.0
 Copyright © 2026 Choonjoo Lee and the identified contributors.
 SPDX-License-Identifier: AFL-3.0
 
-The .ado and .sthlp files in this repository are licensed under the Academic
-Free License version 3.0. The complete, unmodified license is provided in
+The author-maintained .ado, .sthlp, .py and example .do files in this repository
+are licensed under the Academic Free License version 3.0. Third-party packages
+retain their own licenses and are not bundled. The unmodified license is in
 LICENSE. Preserve individual author, contributor and methodological notices.
 No additional non-commercial restriction is imposed.
 

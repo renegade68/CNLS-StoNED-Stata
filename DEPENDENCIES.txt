@@ -1,0 +1,27 @@
+Stata 16 or newer
+================
+Keep every file in ado/ together. Native convnls, cnlsddf, MOM and legacy
+decomposition methods do not require an external solver or Python.
+
+Optional public-reference QLE
+-----------------------------
+requirements-reference-tested.txt records the tested pyStoNED 0.7.3,
+NumPy 2.0.2 and SciPy 1.13.1 combination (CPython 3.9). It is not a complete
+fresh-install lock. Set pythonexec("/absolute/path/to/python") in stoned or
+stonedddf. The bridge checks package versions and 39 reference source hashes.
+No packages are downloaded and no alternative estimator is selected on failure.
+diagnose also attempts a public QLE row; unavailable QLE remains a failed row.
+
+Optional sparse engine and CRS geometry diagnostics
+---------------------------------------------------
+requirements-tested.txt records the tested CPython 3.9 environment with
+NumPy 1.26.4, SciPy 1.13.1, OSQP 1.0.4 and Clarabel 0.11.1. Set
+python("/absolute/path/to/python") in cnlsddf_sparse or cnlsddf_domain.
+
+Use separate virtual environments: these two NumPy pins are incompatible.
+For example, in each environment run its Python executable with:
+  -m pip install -r /absolute/path/to/the/corresponding-requirements-file.txt
+The optional external bridges were tested on macOS; Windows is not validated.
+They do not require Stata's embedded Python configuration.
+
+Third-party packages retain their own licenses and are not bundled here.
